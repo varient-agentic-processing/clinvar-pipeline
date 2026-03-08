@@ -5,3 +5,4 @@ config:
   clinvar-pipeline:region: us-central1
   clinvar-pipeline:pipeline_sa_email: pipeline-sa@variant-processing.iam.gserviceaccount.com
   clinvar-pipeline:bucket: genomic-variant-prototype-variant-processing
+encryptionsalt: v1:kU8KK1CeWUo=:v1:cIyqH573oeI8kPvj:a40F187+ViKfqrs4798+ujDbM7m5qg==
