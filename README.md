@@ -158,3 +158,9 @@ clinvar-pipeline/
 | 3.4 | Cloud Workflow with idempotency | Done |
 | 3.5 | Pulumi deploy + Cloud Scheduler | Done |
 | 3.6 | End-to-end test | Done |
+
+---
+
+## License
+
+[CC BY-NC 4.0](LICENSE) — © 2025 Ryan Ratcliff. Free for non-commercial use with attribution. Commercial use requires prior written consent.
