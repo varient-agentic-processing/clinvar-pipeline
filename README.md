@@ -150,8 +150,8 @@ SELECT
     a.rsid,
     a.clinvar_variation_id,
     a.clinvar_last_evaluated
-FROM variants    FINAL AS v
-INNER JOIN annotations FINAL AS a
+FROM variants AS v FINAL
+INNER JOIN annotations AS a FINAL
     ON  v.chromosome = a.chromosome
     AND v.position   = a.position
     AND v.ref        = a.ref
@@ -175,8 +175,8 @@ SELECT
     a.gene_symbol,
     a.clinical_significance,
     count() AS variant_count
-FROM variants    FINAL AS v
-INNER JOIN annotations FINAL AS a
+FROM variants AS v FINAL
+INNER JOIN annotations AS a FINAL
     ON  v.chromosome = a.chromosome
     AND v.position   = a.position
     AND v.ref        = a.ref
