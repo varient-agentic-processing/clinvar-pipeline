@@ -157,4 +157,4 @@ clinvar-pipeline/
 | 3.3 | variant_summary enricher (Cloud Batch) | Done |
 | 3.4 | Cloud Workflow with idempotency | Done |
 | 3.5 | Pulumi deploy + Cloud Scheduler | Done |
-| 3.6 | End-to-end test | Pending |
+| 3.6 | End-to-end test | Done |
