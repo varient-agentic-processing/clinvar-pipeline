@@ -1,0 +1,37 @@
+[tool.poetry]
+name = "clinvar-pipeline"
+version = "0.1.0"
+description = "ClinVar annotation pipeline: NCBI download → ClickHouse load → variant_summary enrichment via Cloud Workflows + Cloud Batch"
+readme = "README.md"
+authors = []
+package-mode = false
+
+[tool.poetry.dependencies]
+python = "^3.10"
+pulumi = "^3"
+pulumi-gcp = "^8"
+
+[tool.poetry.group.dev.dependencies]
+poethepoet = "^0.39"
+
+[tool.poe]
+envfile = ".env"
+
+[tool.poe.tasks]
+# Build Docker images and push to Artifact Registry via Cloud Build
+build-loader   = { cmd = "bash scripts/build_images.sh --image loader",   help = "Build clinvar-loader image (use -- -p PROJECT -t TAG -n for options)" }
+build-enricher = { cmd = "bash scripts/build_images.sh --image enricher", help = "Build clinvar-enricher image (use -- -p PROJECT -t TAG -n for options)" }
+build-all      = { sequence = ["build-loader", "build-enricher"],          help = "Build and push all Docker images" }
+# Pulumi stack management (run once before first deploy)
+login      = { cmd = "bash -c 'cd deploy && pulumi login gs://vap-pulumi-state-variant-processing'", help = "Log Pulumi into the GCS state backend" }
+stack-init = { cmd = "bash -c 'cd deploy && pulumi stack init dev'",       help = "Init the dev stack (run once after login)" }
+preview    = { cmd = "bash -c 'cd deploy && pulumi preview --stack dev'",  help = "Preview Cloud Function + workflow + scheduler changes" }
+# Deploy Cloud Function + Cloud Workflow + Cloud Scheduler via Pulumi
+deploy  = { cmd = "bash -c 'cd deploy && pulumi up --yes --stack dev'",    help = "Deploy/update Cloud Function, workflow definition, and monthly scheduler" }
+outputs = { cmd = "bash -c 'cd deploy && pulumi stack output --stack dev'", help = "Print stack outputs (incl. download_clinvar_url)" }
+# Trigger workflow manually
+trigger = { cmd = "bash scripts/trigger_workflow.sh", help = "Trigger clinvar-refresh workflow (use -- --bucket BUCKET --clickhouse-host HOST)" }
+
+[build-system]
+requires = ["poetry-core>=1.0"]
+build-backend = "poetry.core.masonry.api"

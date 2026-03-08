@@ -1,0 +1,336 @@
+# Cloud Workflow: clinvar-refresh
+#
+# End-to-end ClinVar annotation refresh:
+#   1. Download ClinVar files from NCBI to GCS (Cloud Function)
+#   2. Load ClinVar VCF into ClickHouse annotations table (Cloud Batch)
+#   3. Enrich annotations with variant_summary TSV (Cloud Batch)
+#   4. Record completion in Firestore
+#
+# Required args:
+#   bucket                GCS bucket name (no gs:// prefix)
+#   project_id            GCP project ID
+#   clickhouse_host       ClickHouse internal IP (e.g. 10.128.0.3)
+#   download_clinvar_url  HTTPS URL of the download-clinvar Cloud Function
+#
+# Optional args:
+#   region                GCP region (default: us-central1)
+#   pipeline_version      Version tag written to Firestore (default: v2)
+#   clinvar_prefix        GCS prefix for ClinVar files (default: raw/clinvar)
+#   force_download        Re-download even if files already exist in GCS (default: false)
+#   force_load            Re-load VCF even if Firestore record exists (default: false)
+#   force_enrich          Re-enrich even if Firestore record exists (default: false)
+
+main:
+  params: [args]
+  steps:
+    - init:
+        assign:
+          - bucket: ${args.bucket}
+          - project_id: ${args.project_id}
+          - clickhouse_host: ${args.clickhouse_host}
+          - download_clinvar_url: ${args.download_clinvar_url}
+          - region: ${default(map.get(args, "region"), "us-central1")}
+          - pipeline_version: ${default(map.get(args, "pipeline_version"), "v2")}
+          - clinvar_prefix: ${default(map.get(args, "clinvar_prefix"), "raw/clinvar")}
+          - force_download: ${default(map.get(args, "force_download"), false)}
+          - force_load: ${default(map.get(args, "force_load"), false)}
+          - force_enrich: ${default(map.get(args, "force_enrich"), false)}
+          - job_prefix: ${"clinvar-" + string(int(sys.now()))}
+          - pipeline_sa: ${"pipeline-sa@" + project_id + ".iam.gserviceaccount.com"}
+          - image_base: ${region + "-docker.pkg.dev/" + project_id + "/genomic-pipeline"}
+          - batch_parent: ${"projects/" + project_id + "/locations/" + region}
+          - vcf_gcs_object: ${text.url_encode(clinvar_prefix + "/clinvar.vcf.gz")}
+          - firestore_load_doc: ${"projects/" + project_id + "/databases/(default)/documents/pipeline_runs/clinvar-load"}
+          - firestore_enrich_doc: ${"projects/" + project_id + "/databases/(default)/documents/pipeline_runs/clinvar-enrich"}
+          - firestore_refresh_doc: ${"projects/" + project_id + "/databases/(default)/documents/pipeline_runs/clinvar-refresh"}
+          - load_job_name: "skipped"
+          - enrich_job_name: "skipped"
+
+    # -----------------------------------------------------------------------
+    # Step 1: Download ClinVar files from NCBI to GCS
+    # Cloud Function runs synchronously — returns when all uploads complete.
+    # Skip if clinvar.vcf.gz already exists in GCS (unless force_download).
+    # -----------------------------------------------------------------------
+    - check_download_cache:
+        switch:
+          - condition: ${force_download == true}
+            next: download
+        next: check_vcf_object_exists
+
+    - check_vcf_object_exists:
+        try:
+          call: googleapis.storage.v1.objects.get
+          args:
+            bucket: ${bucket}
+            object: ${vcf_gcs_object}
+          result: _vcf_obj
+        except:
+          as: e
+          steps:
+            - handle_vcf_miss:
+                switch:
+                  - condition: ${e.code == 404}
+                    next: download
+            - reraise_vcf_error:
+                raise: ${e}
+        next: check_load_cache
+
+    - download:
+        call: http.post
+        args:
+          url: ${download_clinvar_url}
+          auth:
+            type: OIDC
+          timeout: 1800
+          body:
+            bucket: ${bucket}
+            force: ${force_download}
+            clinvar_prefix: ${clinvar_prefix}
+        result: download_result
+
+    # -----------------------------------------------------------------------
+    # Step 2: Load ClinVar VCF into ClickHouse annotations table (Cloud Batch)
+    # Skip if a completed Firestore record already exists (unless force_load).
+    # -----------------------------------------------------------------------
+    - check_load_cache:
+        switch:
+          - condition: ${force_load == true}
+            next: submit_load
+        next: check_load_doc_exists
+
+    - check_load_doc_exists:
+        try:
+          call: googleapis.firestore.v1.projects.databases.documents.get
+          args:
+            name: ${firestore_load_doc}
+          result: _existing_load_doc
+        except:
+          as: e
+          steps:
+            - handle_load_miss:
+                switch:
+                  - condition: ${e.code == 404}
+                    next: submit_load
+            - reraise_load_error:
+                raise: ${e}
+        next: check_enrich_cache
+
+    - submit_load:
+        call: googleapis.batch.v1.projects.locations.jobs.create
+        args:
+          parent: ${batch_parent}
+          jobId: ${job_prefix + "-load"}
+          body:
+            taskGroups:
+              - taskSpec:
+                  runnables:
+                    - container:
+                        imageUri: ${image_base + "/clinvar-loader:v1"}
+                        commands: []
+                      environment:
+                        variables:
+                          BUCKET: ${bucket}
+                          CLICKHOUSE_HOST: ${clickhouse_host}
+                          CLICKHOUSE_PORT: "9000"
+                          GCP_PROJECT: ${project_id}
+                          PIPELINE_VERSION: ${pipeline_version}
+                          CLINVAR_PREFIX: ${clinvar_prefix}
+                  maxRetryCount: 1
+                  maxRunDuration: "3600s"
+                taskCount: 1
+                parallelism: 1
+            allocationPolicy:
+              instances:
+                - policy:
+                    machineType: "e2-standard-2"
+                    provisioningModel: "STANDARD"
+                    bootDisk:
+                      type: "pd-standard"
+                      sizeGb: 30
+              serviceAccount:
+                email: ${pipeline_sa}
+            logsPolicy:
+              destination: CLOUD_LOGGING
+        result: load_job
+
+    - poll_load:
+        call: sys.sleep
+        args:
+          seconds: 30
+
+    - get_load_status:
+        call: googleapis.batch.v1.projects.locations.jobs.get
+        args:
+          name: ${load_job.name}
+        result: load_status
+
+    - check_load_state:
+        switch:
+          - condition: ${load_status.status.state == "SUCCEEDED"}
+            next: record_load_completion
+          - condition: ${load_status.status.state == "FAILED"}
+            next: raise_load_failed
+        next: poll_load
+
+    - raise_load_failed:
+        raise: ${"Load job failed: " + load_job.name}
+
+    - record_load_completion:
+        call: googleapis.firestore.v1.projects.databases.documents.patch
+        args:
+          name: ${firestore_load_doc}
+          body:
+            fields:
+              type:
+                stringValue: clinvar_load
+              status:
+                stringValue: completed
+              pipeline_version:
+                stringValue: ${pipeline_version}
+              load_job:
+                stringValue: ${load_job.name}
+              completed_at:
+                timestampValue: ${time.format(sys.now())}
+        result: _load_firestore_result
+
+    - set_load_job_name:
+        assign:
+          - load_job_name: ${load_job.name}
+
+    # -----------------------------------------------------------------------
+    # Step 3: Enrich annotations with variant_summary TSV (Cloud Batch)
+    # Skip if a completed Firestore record already exists (unless force_enrich).
+    # -----------------------------------------------------------------------
+    - check_enrich_cache:
+        switch:
+          - condition: ${force_enrich == true}
+            next: submit_enrich
+        next: check_enrich_doc_exists
+
+    - check_enrich_doc_exists:
+        try:
+          call: googleapis.firestore.v1.projects.databases.documents.get
+          args:
+            name: ${firestore_enrich_doc}
+          result: _existing_enrich_doc
+        except:
+          as: e
+          steps:
+            - handle_enrich_miss:
+                switch:
+                  - condition: ${e.code == 404}
+                    next: submit_enrich
+            - reraise_enrich_error:
+                raise: ${e}
+        next: record_completion
+
+    - submit_enrich:
+        call: googleapis.batch.v1.projects.locations.jobs.create
+        args:
+          parent: ${batch_parent}
+          jobId: ${job_prefix + "-enrich"}
+          body:
+            taskGroups:
+              - taskSpec:
+                  runnables:
+                    - container:
+                        imageUri: ${image_base + "/clinvar-enricher:v1"}
+                        commands: []
+                      environment:
+                        variables:
+                          BUCKET: ${bucket}
+                          CLICKHOUSE_HOST: ${clickhouse_host}
+                          CLICKHOUSE_PORT: "9000"
+                          GCP_PROJECT: ${project_id}
+                          PIPELINE_VERSION: ${pipeline_version}
+                          CLINVAR_PREFIX: ${clinvar_prefix}
+                  maxRetryCount: 1
+                  maxRunDuration: "3600s"
+                taskCount: 1
+                parallelism: 1
+            allocationPolicy:
+              instances:
+                - policy:
+                    machineType: "e2-standard-2"
+                    provisioningModel: "STANDARD"
+                    bootDisk:
+                      type: "pd-standard"
+                      sizeGb: 30
+              serviceAccount:
+                email: ${pipeline_sa}
+            logsPolicy:
+              destination: CLOUD_LOGGING
+        result: enrich_job
+
+    - poll_enrich:
+        call: sys.sleep
+        args:
+          seconds: 30
+
+    - get_enrich_status:
+        call: googleapis.batch.v1.projects.locations.jobs.get
+        args:
+          name: ${enrich_job.name}
+        result: enrich_status
+
+    - check_enrich_state:
+        switch:
+          - condition: ${enrich_status.status.state == "SUCCEEDED"}
+            next: record_enrich_completion
+          - condition: ${enrich_status.status.state == "FAILED"}
+            next: raise_enrich_failed
+        next: poll_enrich
+
+    - raise_enrich_failed:
+        raise: ${"Enrich job failed: " + enrich_job.name}
+
+    - record_enrich_completion:
+        call: googleapis.firestore.v1.projects.databases.documents.patch
+        args:
+          name: ${firestore_enrich_doc}
+          body:
+            fields:
+              type:
+                stringValue: clinvar_enrich
+              status:
+                stringValue: completed
+              pipeline_version:
+                stringValue: ${pipeline_version}
+              enrich_job:
+                stringValue: ${enrich_job.name}
+              completed_at:
+                timestampValue: ${time.format(sys.now())}
+        result: _enrich_firestore_result
+
+    - set_enrich_job_name:
+        assign:
+          - enrich_job_name: ${enrich_job.name}
+
+    # -----------------------------------------------------------------------
+    # Step 4: Record overall completion in Firestore pipeline_runs collection
+    # -----------------------------------------------------------------------
+    - record_completion:
+        call: googleapis.firestore.v1.projects.databases.documents.patch
+        args:
+          name: ${firestore_refresh_doc}
+          body:
+            fields:
+              type:
+                stringValue: clinvar_refresh
+              status:
+                stringValue: completed
+              pipeline_version:
+                stringValue: ${pipeline_version}
+              load_job:
+                stringValue: ${load_job_name}
+              enrich_job:
+                stringValue: ${enrich_job_name}
+              completed_at:
+                timestampValue: ${time.format(sys.now())}
+        result: _refresh_firestore_result
+
+    - done:
+        return:
+          load_job: ${load_job_name}
+          enrich_job: ${enrich_job_name}
+          status: completed

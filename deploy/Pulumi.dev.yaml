@@ -1,0 +1,7 @@
+config:
+  gcp:project: variant-processing
+  gcp:region: us-central1
+  clinvar-pipeline:project_id: variant-processing
+  clinvar-pipeline:region: us-central1
+  clinvar-pipeline:pipeline_sa_email: pipeline-sa@variant-processing.iam.gserviceaccount.com
+  clinvar-pipeline:bucket: genomic-variant-prototype-variant-processing
