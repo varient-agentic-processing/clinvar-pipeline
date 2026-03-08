@@ -116,6 +116,83 @@ Running the workflow after a completed refresh is a no-op that returns immediate
 gcloud compute ssh clickhouse-db --zone=us-central1-a --project=variant-processing --command="PW=\$(gcloud secrets versions access latest --secret=clickhouse-default-password --project=variant-processing) && /usr/bin/clickhouse-client --password=\$PW --query=\"SELECT count() FROM annotations FINAL\""
 ```
 
+## End-to-end join query
+
+Once both `variant-pipeline` and `clinvar-pipeline` have completed a run, use the following queries to confirm the data is consistent and the join key resolves correctly. Run these via `clickhouse-client` using the same SSH pattern shown in **Verify results** above.
+
+**1. Row counts — confirm both pipelines produced data**
+
+```sql
+SELECT 'variants'    AS table, count() AS rows FROM variants    FINAL
+UNION ALL
+SELECT 'annotations' AS table, count() AS rows FROM annotations FINAL;
+```
+
+**2. Annotated pathogenic variants per individual**
+
+The core join. Returns every variant call that has a ClinVar entry with `Pathogenic` or `Likely_pathogenic` significance, enriched with gene, condition, HGVS notation, and review status.
+
+```sql
+SELECT
+    v.individual_id,
+    v.chromosome,
+    v.position,
+    v.ref,
+    v.alt,
+    v.genotype,
+    v.depth,
+    a.gene_symbol,
+    a.clinical_significance,
+    a.condition_name,
+    a.review_status,
+    a.hgvs_c,
+    a.hgvs_p,
+    a.rsid,
+    a.clinvar_variation_id,
+    a.clinvar_last_evaluated
+FROM variants    FINAL AS v
+INNER JOIN annotations FINAL AS a
+    ON  v.chromosome = a.chromosome
+    AND v.position   = a.position
+    AND v.ref        = a.ref
+    AND v.alt        = a.alt
+WHERE a.clinical_significance IN (
+    'Pathogenic',
+    'Likely_pathogenic',
+    'Pathogenic/Likely_pathogenic'
+)
+ORDER BY v.individual_id, v.chromosome, v.position
+LIMIT 50;
+```
+
+**3. Per-individual summary — pathogenic hit counts by gene**
+
+Useful for a quick overview of which individuals carry annotated pathogenic variants and in which genes.
+
+```sql
+SELECT
+    v.individual_id,
+    a.gene_symbol,
+    a.clinical_significance,
+    count() AS variant_count
+FROM variants    FINAL AS v
+INNER JOIN annotations FINAL AS a
+    ON  v.chromosome = a.chromosome
+    AND v.position   = a.position
+    AND v.ref        = a.ref
+    AND v.alt        = a.alt
+WHERE a.clinical_significance IN (
+    'Pathogenic',
+    'Likely_pathogenic',
+    'Pathogenic/Likely_pathogenic'
+)
+GROUP BY v.individual_id, a.gene_symbol, a.clinical_significance
+ORDER BY variant_count DESC
+LIMIT 25;
+```
+
+A non-zero result from query 2 or 3 confirms that both pipelines ran successfully, the schemas are compatible, and the join key (`chromosome`, `position`, `ref`, `alt`) resolves across the two tables.
+
 ## Project structure
 
 ```
