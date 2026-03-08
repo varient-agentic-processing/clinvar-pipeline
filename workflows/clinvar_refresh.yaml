@@ -173,7 +173,7 @@ main:
         next: poll_load
 
     - raise_load_failed:
-        raise: ${"Load job failed: " + load_job.name}
+        raise: '${"Load job failed: " + load_job.name}'
 
     - record_load_completion:
         call: googleapis.firestore.v1.projects.databases.documents.patch
@@ -282,7 +282,7 @@ main:
         next: poll_enrich
 
     - raise_enrich_failed:
-        raise: ${"Enrich job failed: " + enrich_job.name}
+        raise: '${"Enrich job failed: " + enrich_job.name}'
 
     - record_enrich_completion:
         call: googleapis.firestore.v1.projects.databases.documents.patch
