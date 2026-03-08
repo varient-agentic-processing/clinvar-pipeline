@@ -22,6 +22,7 @@ Optional body fields:
 """
 import json
 import os
+import shutil
 from datetime import date
 
 import functions_framework
@@ -48,9 +49,8 @@ def _stream_to_gcs(url: str, gcs_bucket, gcs_path: str, force: bool) -> int:
 
     print(f"  downloading {url} → gs://{gcs_bucket.name}/{gcs_path}")
     with urllib.request.urlopen(url, timeout=1800) as resp:
-        content_length = resp.headers.get("Content-Length")
-        size_hint = int(content_length) if content_length else None
-        blob.upload_from_file(resp, size=size_hint)
+        with blob.open("wb") as gcs_file:
+            shutil.copyfileobj(resp, gcs_file)
 
     blob.reload()
     size = blob.size or 0
