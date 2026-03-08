@@ -22,6 +22,7 @@ Stack config (set in Pulumi.dev.yaml):
   pipeline_sa_email       pipeline-sa service account email
   bucket                  GCS bucket for source zip upload + pipeline data
 """
+import base64
 import hashlib
 from pathlib import Path
 
@@ -162,7 +163,7 @@ clinvar_scheduler = gcp.cloudscheduler.Job(
             '\\",\\"clickhouse_host\\":\\"10.128.0.3\\",\\"download_clinvar_url\\":\\"',
             download_clinvar_fn.service_config.uri,
             '\\"}"}'
-        ).apply(lambda s: s.encode()),
+        ).apply(lambda s: base64.b64encode(s.encode()).decode()),
         oidc_token=gcp.cloudscheduler.JobHttpTargetOidcTokenArgs(
             service_account_email=pipeline_sa_email,
             audience=pulumi.Output.concat(
