@@ -2,9 +2,12 @@
 #
 # End-to-end ClinVar annotation refresh:
 #   1. Download ClinVar files from NCBI to GCS (Cloud Function)
-#   2. Load ClinVar VCF into ClickHouse annotations table (Cloud Batch)
-#   3. Enrich annotations with variant_summary TSV (Cloud Batch)
-#   4. Record completion in Firestore
+#      - Reads ##fileDate= from VCF header to get the real ClinVar release date
+#   2. Compare downloaded version against loaded_version in Firestore
+#      - If already up to date, return early
+#   3. Load ClinVar VCF into ClickHouse annotations table (Cloud Batch)
+#   4. Enrich annotations with variant_summary TSV (Cloud Batch)
+#   5. Record completion in Firestore (with loaded_version)
 #
 # Required args:
 #   bucket                GCS bucket name (no gs:// prefix)
@@ -16,9 +19,6 @@
 #   region                GCP region (default: us-central1)
 #   pipeline_version      Version tag written to Firestore (default: v2)
 #   clinvar_prefix        GCS prefix for ClinVar files (default: raw/clinvar)
-#   force_download        Re-download even if files already exist in GCS (default: false)
-#   force_load            Re-load VCF even if Firestore record exists (default: false)
-#   force_enrich          Re-enrich even if Firestore record exists (default: false)
 
 main:
   params: [args]
@@ -32,14 +32,10 @@ main:
           - region: ${default(map.get(args, "region"), "us-central1")}
           - pipeline_version: ${default(map.get(args, "pipeline_version"), "v2")}
           - clinvar_prefix: ${default(map.get(args, "clinvar_prefix"), "raw/clinvar")}
-          - force_download: ${default(map.get(args, "force_download"), false)}
-          - force_load: ${default(map.get(args, "force_load"), false)}
-          - force_enrich: ${default(map.get(args, "force_enrich"), false)}
           - job_prefix: ${"clinvar-" + string(int(sys.now()))}
           - pipeline_sa: ${"pipeline-sa@" + project_id + ".iam.gserviceaccount.com"}
           - image_base: ${region + "-docker.pkg.dev/" + project_id + "/genomic-pipeline"}
           - batch_parent: ${"projects/" + project_id + "/locations/" + region}
-          - vcf_gcs_object: ${text.url_encode(clinvar_prefix + "/clinvar.vcf.gz")}
           - firestore_load_doc: ${"projects/" + project_id + "/databases/(default)/documents/pipeline_runs/clinvar-load"}
           - firestore_enrich_doc: ${"projects/" + project_id + "/databases/(default)/documents/pipeline_runs/clinvar-enrich"}
           - firestore_refresh_doc: ${"projects/" + project_id + "/databases/(default)/documents/pipeline_runs/clinvar-refresh"}
@@ -48,33 +44,8 @@ main:
 
     # -----------------------------------------------------------------------
     # Step 1: Download ClinVar files from NCBI to GCS
-    # Cloud Function runs synchronously — returns when all uploads complete.
-    # Skip if clinvar.vcf.gz already exists in GCS (unless force_download).
+    # Always downloads. Reads ##fileDate= from VCF header for actual version.
     # -----------------------------------------------------------------------
-    - check_download_cache:
-        switch:
-          - condition: ${force_download == true}
-            next: download
-        next: check_vcf_object_exists
-
-    - check_vcf_object_exists:
-        try:
-          call: googleapis.storage.v1.objects.get
-          args:
-            bucket: ${bucket}
-            object: ${vcf_gcs_object}
-          result: _vcf_obj
-        except:
-          as: e
-          steps:
-            - handle_vcf_miss:
-                switch:
-                  - condition: ${e.code == 404}
-                    next: download
-            - reraise_vcf_error:
-                raise: ${e}
-        next: check_load_cache
-
     - download:
         call: http.post
         args:
@@ -84,37 +55,45 @@ main:
           timeout: 1800
           body:
             bucket: ${bucket}
-            force: ${force_download}
             clinvar_prefix: ${clinvar_prefix}
         result: download_result
 
     # -----------------------------------------------------------------------
-    # Step 2: Load ClinVar VCF into ClickHouse annotations table (Cloud Batch)
-    # Skip if a completed Firestore record already exists (unless force_load).
+    # Step 2: Version check — skip load+enrich if already up to date
+    # Reads loaded_version from the clinvar-refresh Firestore doc.
+    # If it matches the downloaded VCF version, return early.
     # -----------------------------------------------------------------------
-    - check_load_cache:
-        switch:
-          - condition: ${force_load == true}
-            next: submit_load
-        next: check_load_doc_exists
-
-    - check_load_doc_exists:
+    - check_current_version:
         try:
           call: googleapis.firestore.v1.projects.databases.documents.get
           args:
-            name: ${firestore_load_doc}
-          result: _existing_load_doc
+            name: ${firestore_refresh_doc}
+          result: existing_refresh_doc
         except:
           as: e
           steps:
-            - handle_load_miss:
+            - handle_version_miss:
                 switch:
                   - condition: ${e.code == 404}
                     next: submit_load
-            - reraise_load_error:
+            - reraise_version_error:
                 raise: ${e}
-        next: check_enrich_cache
+        next: compare_version
 
+    - compare_version:
+        switch:
+          - condition: ${map.get(existing_refresh_doc.fields, "loaded_version") != null and existing_refresh_doc.fields.loaded_version.stringValue == download_result.body.version}
+            next: already_up_to_date
+        next: submit_load
+
+    - already_up_to_date:
+        return:
+          status: "up_to_date"
+          version: ${download_result.body.version}
+
+    # -----------------------------------------------------------------------
+    # Step 3: Load ClinVar VCF into ClickHouse annotations table (Cloud Batch)
+    # -----------------------------------------------------------------------
     - submit_load:
         call: googleapis.batch.v1.projects.locations.jobs.create
         args:
@@ -198,32 +177,8 @@ main:
           - load_job_name: ${load_job.name}
 
     # -----------------------------------------------------------------------
-    # Step 3: Enrich annotations with variant_summary TSV (Cloud Batch)
-    # Skip if a completed Firestore record already exists (unless force_enrich).
+    # Step 4: Enrich annotations with variant_summary TSV (Cloud Batch)
     # -----------------------------------------------------------------------
-    - check_enrich_cache:
-        switch:
-          - condition: ${force_enrich == true}
-            next: submit_enrich
-        next: check_enrich_doc_exists
-
-    - check_enrich_doc_exists:
-        try:
-          call: googleapis.firestore.v1.projects.databases.documents.get
-          args:
-            name: ${firestore_enrich_doc}
-          result: _existing_enrich_doc
-        except:
-          as: e
-          steps:
-            - handle_enrich_miss:
-                switch:
-                  - condition: ${e.code == 404}
-                    next: submit_enrich
-            - reraise_enrich_error:
-                raise: ${e}
-        next: record_completion
-
     - submit_enrich:
         call: googleapis.batch.v1.projects.locations.jobs.create
         args:
@@ -307,7 +262,8 @@ main:
           - enrich_job_name: ${enrich_job.name}
 
     # -----------------------------------------------------------------------
-    # Step 4: Record overall completion in Firestore pipeline_runs collection
+    # Step 5: Record overall completion in Firestore
+    # Stores loaded_version so future runs can skip if ClinVar hasn't changed.
     # -----------------------------------------------------------------------
     - record_completion:
         call: googleapis.firestore.v1.projects.databases.documents.patch
@@ -321,6 +277,8 @@ main:
                 stringValue: completed
               pipeline_version:
                 stringValue: ${pipeline_version}
+              loaded_version:
+                stringValue: ${download_result.body.version}
               load_job:
                 stringValue: ${load_job_name}
               enrich_job:
@@ -333,4 +291,5 @@ main:
         return:
           load_job: ${load_job_name}
           enrich_job: ${enrich_job_name}
+          version: ${download_result.body.version}
           status: completed
