@@ -19,6 +19,7 @@
 #   region                GCP region (default: us-central1)
 #   pipeline_version      Version tag written to Firestore (default: v2)
 #   clinvar_prefix        GCS prefix for ClinVar files (default: raw/clinvar)
+#   stats_service_url     URL of stats-service (if set, POST /stats/compute is called on completion)
 
 main:
   params: [args]
@@ -32,6 +33,7 @@ main:
           - region: ${default(map.get(args, "region"), "us-central1")}
           - pipeline_version: ${default(map.get(args, "pipeline_version"), "v2")}
           - clinvar_prefix: ${default(map.get(args, "clinvar_prefix"), "raw/clinvar")}
+          - stats_service_url: ${default(map.get(args, "stats_service_url"), "")}
           - job_prefix: ${"clinvar-" + string(int(sys.now()))}
           - pipeline_sa: ${"pipeline-sa@" + project_id + ".iam.gserviceaccount.com"}
           - image_base: ${region + "-docker.pkg.dev/" + project_id + "/genomic-pipeline"}
@@ -286,6 +288,34 @@ main:
               completed_at:
                 timestampValue: ${time.format(sys.now())}
         result: _refresh_firestore_result
+
+    # -----------------------------------------------------------------------
+    # Step 6: Trigger stats-service to pre-compute dashboard aggregates
+    # Only called if stats_service_url is provided. Failures are non-fatal.
+    # -----------------------------------------------------------------------
+    - maybe_compute_stats:
+        switch:
+          - condition: ${stats_service_url != ""}
+            next: compute_stats
+        next: done
+
+    - compute_stats:
+        try:
+          call: http.post
+          args:
+            url: ${stats_service_url + "/stats/compute"}
+            auth:
+              type: OIDC
+            timeout: 300
+          result: _stats_result
+        except:
+          as: e
+          steps:
+            - log_stats_error:
+                call: sys.log
+                args:
+                  text: '${"stats-service compute failed, continuing: " + json.encode_to_string(e)}'
+                  severity: WARNING
 
     - done:
         return:
