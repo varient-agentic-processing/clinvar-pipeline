@@ -81,34 +81,22 @@ Deploys:
 
 ## Trigger manually
 
+The easiest way is the **vap-ui Submit Pipeline → ClinVar Refresh** tab. Or via CLI:
+
 ```bash
 poetry run poe trigger -- --bucket genomic-variant-prototype-variant-processing --clickhouse-host 10.128.0.3
 ```
 
-Force flags (individual steps can be forced independently):
+## Version-aware refresh
 
-```bash
-# Re-download files from NCBI even if they exist in GCS
-poetry run poe trigger -- --bucket BUCKET --clickhouse-host HOST --force-download
+The workflow always re-downloads all ClinVar files from NCBI. The download function reads the `##fileDate=` line from the VCF header to get the actual ClinVar release date.
 
-# Re-load VCF even if Firestore record exists
-poetry run poe trigger -- --bucket BUCKET --clickhouse-host HOST --force-load
+After downloading, the workflow reads `loaded_version` from the `pipeline_runs/clinvar-refresh` Firestore doc and compares it to the downloaded version:
 
-# Re-enrich even if Firestore record exists
-poetry run poe trigger -- --bucket BUCKET --clickhouse-host HOST --force-enrich
-```
+- **Same version** → returns `{"status": "up_to_date"}` immediately. No Batch jobs run.
+- **New version** → runs the load and enrich Batch jobs, then writes `loaded_version` back to Firestore.
 
-## Idempotency
-
-Each step checks a cache before running:
-
-| Step | Cache check | Skip condition |
-|------|-------------|----------------|
-| Download | GCS object `raw/clinvar/clinvar.vcf.gz` exists | File present + `force_download=false` |
-| Load | Firestore doc `pipeline_runs/clinvar-load` exists | Doc present + `force_load=false` |
-| Enrich | Firestore doc `pipeline_runs/clinvar-enrich` exists | Doc present + `force_enrich=false` |
-
-Running the workflow after a completed refresh is a no-op that returns immediately with all jobs as `skipped`.
+This means running the workflow twice in a row is always safe — the second run is a fast no-op.
 
 ## Verify results
 
