@@ -314,7 +314,7 @@ main:
             - log_stats_error:
                 call: sys.log
                 args:
-                  text: ${"stats-service compute failed, continuing: " + json.encode_to_string(e)}
+                  text: '${"stats-service compute failed, continuing: " + json.encode_to_string(e)}'
                   severity: WARNING
 
     - done:
