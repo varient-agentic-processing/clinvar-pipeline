@@ -106,7 +106,7 @@ main:
               - taskSpec:
                   runnables:
                     - container:
-                        imageUri: ${image_base + "/clinvar-loader:v1"}
+                        imageUri: ${image_base + "/clinvar-loader:sha-bfe755aff92f"}
                         commands: []
                       environment:
                         variables:
@@ -191,7 +191,7 @@ main:
               - taskSpec:
                   runnables:
                     - container:
-                        imageUri: ${image_base + "/clinvar-enricher:v1"}
+                        imageUri: ${image_base + "/clinvar-enricher:sha-2ab7ecd6c25c"}
                         commands: []
                       environment:
                         variables:

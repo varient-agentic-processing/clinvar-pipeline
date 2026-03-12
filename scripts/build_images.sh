@@ -7,6 +7,11 @@
 #   images/loader/    → genomic-pipeline/clinvar-loader:TAG
 #   images/enricher/  → genomic-pipeline/clinvar-enricher:TAG
 #
+# The tag is derived from a SHA256 hash of all files in the build context
+# directory, so it changes only when the image source changes. After a
+# successful build the workflow YAML is patched in-place so that `poe deploy`
+# picks up the new image automatically.
+#
 # Prerequisites:
 #   - Artifact Registry repo "genomic-pipeline" exists (managed by infra repo)
 #   - Cloud Build API enabled
@@ -17,7 +22,7 @@ PROJECT_ID="${GCP_PROJECT:-$(gcloud config get-value project 2>/dev/null)}"
 LOCATION="us-central1"
 REPOSITORY="genomic-pipeline"
 IMAGE_NAME=""
-TAG="v1"
+TAG=""          # empty = compute from content hash
 DRY_RUN=false
 
 VALID_IMAGES="loader enricher"
@@ -27,11 +32,15 @@ declare -A IMAGE_REGISTRY=(
     ["enricher"]="clinvar-enricher"
 )
 
+WORKFLOW_YAML="workflows/clinvar_refresh.yaml"
+
 usage() {
   cat <<EOF
 Usage: $0 --image IMAGE [OPTIONS]
 
 Build a Docker image via Cloud Build and push to Artifact Registry.
+The tag is automatically derived from a content hash of the image directory
+and the workflow YAML is patched in-place after a successful build.
 
 Required:
   --image NAME         Image to build: loader | enricher
@@ -39,7 +48,7 @@ Required:
 Options:
   -p, --project ID     GCP project ID (default: from gcloud config)
   -l, --location LOC   Artifact Registry location (default: us-central1)
-  -t, --tag TAG        Image tag (default: v1)
+  -t, --tag TAG        Override image tag (default: content hash)
   -n, --dry-run        Print commands without executing
   -h, --help           Show this help
 
@@ -60,14 +69,20 @@ run() {
   fi
 }
 
+# Compute a 12-char content hash from all files in a directory.
+content_hash() {
+  local dir="$1"
+  find "$dir" -type f | sort | xargs shasum -a 256 | shasum -a 256 | cut -c1-12
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --image)        IMAGE_NAME="$2";  shift 2 ;;
-    -p|--project)   PROJECT_ID="$2";  shift 2 ;;
-    -l|--location)  LOCATION="$2";    shift 2 ;;
-    -t|--tag)       TAG="$2";         shift 2 ;;
-    -n|--dry-run)   DRY_RUN=true;     shift   ;;
-    -h|--help)      usage; exit 0 ;;
+    --image)       IMAGE_NAME="$2"; shift 2 ;;
+    -p|--project)  PROJECT_ID="$2"; shift 2 ;;
+    -l|--location) LOCATION="$2";   shift 2 ;;
+    -t|--tag)      TAG="$2";        shift 2 ;;
+    -n|--dry-run)  DRY_RUN=true;    shift   ;;
+    -h|--help)     usage; exit 0 ;;
     *)
       echo "Unknown option: $1" >&2
       usage >&2
@@ -105,11 +120,18 @@ if [[ ! -f "${BUILD_CONTEXT}/Dockerfile" ]]; then
   exit 1
 fi
 
+# Derive tag from content hash if not overridden
+if [[ -z "$TAG" ]]; then
+  TAG="sha-$(content_hash "${BUILD_CONTEXT}")"
+fi
+
 FULL_IMAGE="${LOCATION}-docker.pkg.dev/${PROJECT_ID}/${REPOSITORY}/${REGISTRY_NAME}:${TAG}"
+WORKFLOW_FILE="${REPO_ROOT}/${WORKFLOW_YAML}"
 
 echo "Project:  $PROJECT_ID"
 echo "Image:    $FULL_IMAGE"
 echo "Context:  $BUILD_CONTEXT"
+echo "Tag:      $TAG"
 [[ "$DRY_RUN" == "true" ]] && echo "(dry-run mode)"
 echo ""
 
@@ -123,4 +145,13 @@ run gcloud builds submit "${BUILD_CONTEXT}" \
   --tag="$FULL_IMAGE"
 
 echo ""
-echo "Done. Image available at: $FULL_IMAGE"
+echo "Patching ${WORKFLOW_YAML} with new tag..."
+if [[ "$DRY_RUN" == "true" ]]; then
+  echo "[dry-run] sed -i '' 's|${REGISTRY_NAME}:[^\"]*|${REGISTRY_NAME}:${TAG}|g' ${WORKFLOW_FILE}"
+else
+  sed -i '' "s|${REGISTRY_NAME}:[^\"|']*|${REGISTRY_NAME}:${TAG}|g" "${WORKFLOW_FILE}"
+  echo "Done. Run 'poe deploy' to push the updated workflow definition."
+fi
+
+echo ""
+echo "Image available at: $FULL_IMAGE"
