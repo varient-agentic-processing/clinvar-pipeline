@@ -34,6 +34,7 @@ Trigger (Cloud Scheduler monthly, or manual)
 ## Prerequisites
 
 - [Poetry](https://python-poetry.org/docs/#installation)
+- [poethepoet](https://github.com/nat-n/poethepoet) — task runner (`pipx install poethepoet`)
 - [Pulumi CLI](https://www.pulumi.com/docs/install/)
 - [gcloud CLI](https://cloud.google.com/sdk/docs/install) authenticated
 - Base infrastructure deployed from the `infra` repo
@@ -55,23 +56,23 @@ poetry install
 Initialize Pulumi (first time only):
 
 ```bash
-poetry run poe login
-poetry run poe stack-init
+poe login
+poe stack-init
 ```
 
 ## Build Docker images
 
 ```bash
-poetry run poe build-all
+poe build-all
 # or individually:
-poetry run poe build-loader
-poetry run poe build-enricher
+poe build-loader
+poe build-enricher
 ```
 
 ## Deploy
 
 ```bash
-poetry run poe deploy
+poe deploy
 ```
 
 Deploys:
@@ -84,7 +85,7 @@ Deploys:
 The easiest way is the **vap-ui Submit Pipeline → ClinVar Refresh** tab. Or via CLI:
 
 ```bash
-poetry run poe trigger -- --bucket genomic-variant-prototype-variant-processing --clickhouse-host 10.128.0.3
+poe trigger -- --bucket genomic-variant-prototype-variant-processing --clickhouse-host 10.128.0.3
 ```
 
 ## Version-aware refresh
