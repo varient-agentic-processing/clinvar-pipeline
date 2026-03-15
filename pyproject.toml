@@ -31,7 +31,7 @@ envfile = ".env"
 
 [tool.poe.tasks]
 # Build Docker images and push to Artifact Registry via Cloud Build
-test           = { cmd = "pytest tests/ -v --cov --cov-report=term-missing --cov-report=html:coverage-report", help = "Run tests with coverage" }
+test           = { cmd = "pytest tests/ -v --cov --cov-report=term-missing --cov-report=html:coverage-report --cov-fail-under=37", help = "Run tests with coverage" }
 build-loader   = { cmd = "bash scripts/build_images.sh --image loader",   help = "Build clinvar-loader image (use -- -p PROJECT -t TAG -n for options)" }
 build-enricher = { cmd = "bash scripts/build_images.sh --image enricher", help = "Build clinvar-enricher image (use -- -p PROJECT -t TAG -n for options)" }
 build-all      = { sequence = ["build-loader", "build-enricher"],          help = "Build and push all Docker images" }
