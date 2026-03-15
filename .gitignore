@@ -3,3 +3,7 @@
 __pycache__/
 *.pyc
 .venv/
+
+# Test/coverage reports
+coverage-report/
+.coverage
