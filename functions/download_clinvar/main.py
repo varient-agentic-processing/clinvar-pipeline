@@ -2,7 +2,7 @@
 Cloud Function: download-clinvar
 
 Downloads ClinVar files from NCBI HTTPS to GCS raw/clinvar/.
-Streams directly to GCS — no local disk required.
+Streams directly to GCS — no local disk I/O required.
 
 Always re-downloads on every invocation. Reads the ##fileDate= line from
 the VCF header to extract the actual ClinVar release date, which is returned
