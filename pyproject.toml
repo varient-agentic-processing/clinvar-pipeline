@@ -13,12 +13,25 @@ pulumi-gcp = "^8"
 
 [tool.poetry.group.dev.dependencies]
 poethepoet = "^0.39"
+pytest = ">=8.0.0"
+pytest-cov = ">=5.0.0"
+pytest-asyncio = ">=0.23.0"
+clickhouse-driver = "^0.2.10"
+google-cloud-storage = "^3.9.0"
+
+[tool.coverage.run]
+source = ["images", "functions"]
+omit = ["tests/*", "*/__init__.py", "deploy/*"]
+
+[tool.coverage.report]
+show_missing = true
 
 [tool.poe]
 envfile = ".env"
 
 [tool.poe.tasks]
 # Build Docker images and push to Artifact Registry via Cloud Build
+test           = { cmd = "pytest tests/ -v --cov --cov-report=term-missing --cov-report=html:coverage-report", help = "Run tests with coverage" }
 build-loader   = { cmd = "bash scripts/build_images.sh --image loader",   help = "Build clinvar-loader image (use -- -p PROJECT -t TAG -n for options)" }
 build-enricher = { cmd = "bash scripts/build_images.sh --image enricher", help = "Build clinvar-enricher image (use -- -p PROJECT -t TAG -n for options)" }
 build-all      = { sequence = ["build-loader", "build-enricher"],          help = "Build and push all Docker images" }
